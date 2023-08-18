@@ -1,8 +1,12 @@
 #![deny(clippy::all)]
 
+use std::any::TypeId;
+
 use geozero::mvt::{tile, Message, Tile, TileValue};
 use geozero::{geojson::GeoJson, wkb::Ewkb, GeozeroGeometry, ToGeo, ToMvt, ToWkb};
-use napi::bindgen_prelude::Buffer;
+use napi::bindgen_prelude::{Array, Buffer, Either3, Float64Array, Object};
+use napi::bindgen_prelude::{Either4, Either5};
+use napi::{Either, JsBoolean, JsNull, JsNumber, JsObject, JsString, JsUnknown};
 
 #[macro_use]
 extern crate napi_derive;
@@ -40,73 +44,35 @@ fn add_feature_attribute(
 }
 
 #[napi]
-pub fn wkb2mvt(buf: Buffer, left: f64, bottom: f64, right: f64, top: f64, extent: u32) -> Buffer {
+pub fn wkb2mvt(wkb_buf: Buffer, extent: u32, bbox: Float64Array, properties: Object) -> Buffer {
   let mut mvt_tile = Tile::default();
 
   let mut mvt_layer = tile::Layer {
     version: 2,
     ..Default::default()
   };
-  mvt_layer.name = String::from("polygon");
-  mvt_layer.extent = Some(4096);
+  mvt_layer.name = String::from("layer");
+  mvt_layer.extent = Some(extent);
 
-  let _wkb = Ewkb(buf.to_vec());
-  let feature = _wkb.to_mvt(extent, left, bottom, right, top).unwrap();
-  mvt_layer.features.push(feature);
-  mvt_tile.layers.push(mvt_layer);
+  let ewkb = Ewkb(wkb_buf.to_vec());
+  let mut mvt_feature: tile::Feature = ewkb
+    .to_mvt(extent, bbox[0], bbox[1], bbox[2], bbox[3])
+    .unwrap();
+  mvt_feature.id = Some(1);
 
-  mvt_layer = tile::Layer {
-    version: 2,
-    ..Default::default()
-  };
-  mvt_layer.name = String::from("points");
-  mvt_layer.extent = Some(4096);
+  // Add properties
+  Object::keys(&properties).unwrap().iter().for_each(|key| {
+    let value: Either4<JsNumber, JsString, JsBoolean, JsNull> =
+      properties.get_named_property(key).unwrap();
+    let value = match value {
+      Either4::A(value) => TileValue::Double(value.get_double().unwrap()),
+      Either4::B(value) => TileValue::Str(value.into_utf8().unwrap().as_str().unwrap().to_string()),
+      Either4::C(value) => TileValue::Bool(value.get_value().unwrap()),
+      _ => unimplemented!(),
+    };
 
-  let mut mvt_feature = tile::Feature {
-    id: Some(1),
-    ..Default::default()
-  };
-  mvt_feature.set_type(tile::GeomType::Point);
-  mvt_feature.geometry = [9, 4900, 6262].to_vec();
-
-  add_feature_attribute(
-    &mut mvt_layer,
-    &mut mvt_feature,
-    String::from("hello"),
-    TileValue::Str("world".to_string()),
-  );
-  add_feature_attribute(
-    &mut mvt_layer,
-    &mut mvt_feature,
-    String::from("h"),
-    TileValue::Str("world".to_string()),
-  );
-  add_feature_attribute(
-    &mut mvt_layer,
-    &mut mvt_feature,
-    String::from("count"),
-    TileValue::Double(1.23),
-  );
-
-  mvt_layer.features.push(mvt_feature);
-
-  mvt_feature = tile::Feature::default();
-  mvt_feature.id = Some(2);
-  mvt_feature.set_type(tile::GeomType::Point);
-  mvt_feature.geometry = [9, 490, 6262].to_vec();
-
-  add_feature_attribute(
-    &mut mvt_layer,
-    &mut mvt_feature,
-    String::from("hello"),
-    TileValue::Str("again".to_string()),
-  );
-  add_feature_attribute(
-    &mut mvt_layer,
-    &mut mvt_feature,
-    String::from("count"),
-    TileValue::Int(2),
-  );
+    add_feature_attribute(&mut mvt_layer, &mut mvt_feature, key.to_string(), value);
+  });
 
   mvt_layer.features.push(mvt_feature);
   mvt_tile.layers.push(mvt_layer);
